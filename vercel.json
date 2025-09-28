@@ -1,0 +1,19 @@
+{
+  "env": {
+    "DATABASE_URL": "postgresql://neondb_owner:npg_H0kqn5WwzfKQ@ep-late-term-aevhnvre-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+    "POSTGRES_URL": "postgresql://neondb_owner:npg_H0kqn5WwzfKQ@ep-late-term-aevhnvre-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+    "DEV_DATABASE_URL": "postgresql://neondb_owner:npg_H0kqn5WwzfKQ@ep-wild-fog-aebf4jqi-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+    "POSTGRES_URL_DEV": "postgresql://neondb_owner:npg_H0kqn5WwzfKQ@ep-wild-fog-aebf4jqi-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+  },
+  "functions": {
+    "app/api/magic-link/route.ts": {
+      "runtime": "nodejs18.x",
+      "env": {
+        "DATABASE_URL": "postgresql://neondb_owner:npg_H0kqn5WwzfKQ@ep-late-term-aevhnvre-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+        "POSTGRES_URL": "postgresql://neondb_owner:npg_H0kqn5WwzfKQ@ep-late-term-aevhnvre-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+        "DEV_DATABASE_URL": "postgresql://neondb_owner:npg_H0kqn5WwzfKQ@ep-wild-fog-aebf4jqi-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+        "POSTGRES_URL_DEV": "postgresql://neondb_owner:npg_H0kqn5WwzfKQ@ep-wild-fog-aebf4jqi-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+      }
+    }
+  }
+}
