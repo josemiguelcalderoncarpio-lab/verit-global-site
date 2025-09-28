@@ -1,17 +1,12 @@
+/* Tailwind v4 single import */
 @import "tailwindcss";
 
+/* ---- light/dark tokens ---- */
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --brand: #014E76; /* logo blue */
 }
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
@@ -19,8 +14,66 @@
   }
 }
 
+/* ---- base page styles ---- */
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Improve focus visibility across the site */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--brand);
+}
+
+/* ---------------------------------------------------------
+   NAVBAR SEARCH ONLY — force high-contrast typed text
+   and placeholder, regardless of utility overrides.
+---------------------------------------------------------- */
+header input[type="search"],
+nav input[type="search"],
+form[role="search"] input[type="search"],
+header form input[type="search"],
+/* common fallback: sometimes the box is type="text" with name="q" */
+header input[type="text"][name="q"],
+nav input[type="text"][name="q"],
+form[role="search"] input[type="text"][name="q"] {
+  color: #0f172a !important;                  /* dark text */
+  -webkit-text-fill-color: #0f172a !important;/* Safari */
+  font-weight: 600 !important;                /* crisper glyphs */
+  opacity: 1 !important;                      /* defeat faded utilities */
+  caret-color: var(--brand);
+}
+
+header input[type="search"]::placeholder,
+nav input[type="search"]::placeholder,
+form[role="search"] input[type="search"]::placeholder,
+header form input[type="search"]::placeholder,
+header input[type="text"][name="q"]::placeholder,
+nav input[type="text"][name="q"]::placeholder,
+form[role="search"] input[type="text"][name="q"]::placeholder {
+  color: #475569 !important;                  /* slate-600 */
+  opacity: 1 !important;                      /* remove washed-out look */
+}
+
+/* Optional: dark-mode tweak if header ever goes dark */
+@media (prefers-color-scheme: dark) {
+  header input[type="search"],
+  nav input[type="search"],
+  form[role="search"] input[type="search"],
+  header input[type="text"][name="q"],
+  nav input[type="text"][name="q"],
+  form[role="search"] input[type="text"][name="q"] {
+    color: #f8fafc !important;                /* slate-50 */
+    -webkit-text-fill-color: #f8fafc !important;
+  }
+  header input[type="search"]::placeholder,
+  nav input[type="search"]::placeholder,
+  form[role="search"] input[type="search"]::placeholder,
+  header input[type="text"][name="q"]::placeholder,
+  nav input[type="text"][name="q"]::placeholder,
+  form[role="search"] input[type="text"][name="q"]::placeholder {
+    color: #cbd5e1 !important;                /* slate-300 */
+  }
 }

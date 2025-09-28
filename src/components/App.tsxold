@@ -1,0 +1,490 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
+
+/**
+ * Verit Global - Investor-Facing Single Page
+ * - Next.js + Tailwind only
+ * - Sticky header + nav with anchor links
+ * - 5-image hero rotator with captions
+ * - Sections: Home, Product, Industry, Tech & Security, Investors, About, Contact
+ * - Industry includes "Ticketed Events (Sports & Concerts)"
+ */
+
+type SectionId =
+  | "home"
+  | "product"
+  | "industry"
+  | "tech"
+  | "investors"
+  | "about"
+  | "contact";
+
+const NAV: { label: string; href: `#${SectionId}` }[] = [
+  { label: "Home", href: "#home" },
+  { label: "Product", href: "#product" },
+  { label: "Industry", href: "#industry" },
+  { label: "Tech & Security", href: "#tech" },
+  { label: "Investors", href: "#investors" },
+  { label: "About", href: "#about" },
+  { label: "Contact", href: "#contact" },
+];
+
+export default function App() {
+  // ----- HERO ROTATOR -----
+  const slides = useMemo(
+    () => [
+      { src: "/images/hero1.jpg", caption: "Global Digital Network" },
+      { src: "/images/hero2.jpg", caption: "Secure & Audit-Ready Payouts" },
+      { src: "/images/hero3.jpg", caption: "Deterministic Settlement (VGoS)" },
+      { src: "/images/hero4.jpg", caption: "Scalable. Composable. Reliable." },
+      { src: "/images/hero5.jpg", caption: "Governance & Controls Built-In" },
+    ],
+    []
+  );
+
+  const [index, setIndex] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const next = () => setIndex((i) => (i + 1) % slides.length);
+  const prev = () => setIndex((i) => (i - 1 + slides.length) % slides.length);
+  const goTo = (i: number) => setIndex(i % slides.length);
+
+  useEffect(() => {
+    if (paused) return;
+    timerRef.current = setInterval(next, 6000);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [paused, slides.length]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowRight") next();
+      if (e.key === "ArrowLeft") prev();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Mobile nav
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Helper: smooth close mobile on nav click
+  const onNavClick = () => setMobileOpen(false);
+
+  return (
+    <div className="min-h-screen scroll-smooth bg-white text-slate-900">
+      {/* Header */}
+      <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/80 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 md:px-6">
+          <div className="flex items-center gap-3">
+            <Image
+              src="/logo.png"
+              alt="Verit Global logo"
+              width={36}
+              height={36}
+              priority
+            />
+            <div className="flex flex-col leading-tight">
+              <span className="text-lg font-semibold">Verit Global Labs</span>
+              <span className="text-xs text-slate-500">Deterministic Payouts</span>
+            </div>
+          </div>
+
+          {/* Desktop Nav */}
+          <nav className="hidden items-center gap-2 md:flex">
+            {NAV.map((item) => (
+              <a
+                key={item.href}
+                href={item.href}
+                className="rounded-lg px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+              >
+                {item.label}
+              </a>
+            ))}
+          </nav>
+
+          {/* Mobile toggle */}
+          <button
+            aria-label="Toggle navigation"
+            className="rounded-md p-2 ring-1 ring-slate-300 md:hidden"
+            onClick={() => setMobileOpen((v) => !v)}
+          >
+            <svg
+              className="h-5 w-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+            >
+              <path
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d={
+                  mobileOpen
+                    ? "M6 18L18 6M6 6l12 12"
+                    : "M3 6h18M3 12h18M3 18h18"
+                }
+              />
+            </svg>
+          </button>
+        </div>
+
+        {/* Mobile Nav */}
+        {mobileOpen && (
+          <nav className="border-t border-slate-200 md:hidden">
+            <div className="mx-auto grid max-w-7xl grid-cols-2 gap-1 px-4 py-2">
+              {NAV.map((item) => (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  onClick={onNavClick}
+                  className="rounded-lg px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+                >
+                  {item.label}
+                </a>
+              ))}
+            </div>
+          </nav>
+        )}
+      </header>
+
+      {/* Hero (Home) */}
+      <section id="home" className="relative">
+        <div
+          className="relative mx-auto max-w-7xl px-4 py-10 sm:py-12 md:py-14 lg:py-16"
+          onMouseEnter={() => setPaused(true)}
+          onMouseLeave={() => setPaused(false)}
+        >
+          <div className="relative h-[360px] w-full overflow-hidden rounded-2xl shadow-sm ring-1 ring-slate-200 sm:h-[420px] md:h-[520px]">
+            {/* Slide */}
+            <Image
+              key={index /* re-render on change for fade */}
+              src={slides[index].src}
+              alt={slides[index].caption}
+              fill
+              sizes="100vw"
+              className="object-cover transition-opacity duration-500"
+              priority
+            />
+            {/* Overlay gradient */}
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/50 via-black/20 to-transparent" />
+            {/* Caption */}
+            <div className="absolute bottom-5 left-5 right-5 flex items-end justify-between gap-4">
+              <div className="max-w-[70%]">
+                <h1 className="text-2xl font-semibold leading-snug text-white drop-shadow sm:text-3xl md:text-4xl">
+                  {slides[index].caption}
+                </h1>
+                <p className="mt-2 text-sm text-slate-100/90 sm:text-base">
+                  VGoS — a deterministic payout engine delivering
+                  audit-ready, reproducible settlement.
+                </p>
+              </div>
+              <div className="hidden shrink-0 items-center gap-2 md:flex">
+                <button
+                  aria-label="Previous slide"
+                  className="rounded-full bg-white/90 p-2 text-slate-800 shadow hover:bg-white"
+                  onClick={prev}
+                >
+                  ‹
+                </button>
+                <button
+                  aria-label="Next slide"
+                  className="rounded-full bg-white/90 p-2 text-slate-800 shadow hover:bg-white"
+                  onClick={next}
+                >
+                  ›
+                </button>
+              </div>
+            </div>
+
+            {/* Dots */}
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2">
+              <div className="flex items-center gap-2 rounded-full bg-black/30 px-3 py-1">
+                {slides.map((_, i) => (
+                  <button
+                    key={i}
+                    aria-label={`Go to slide ${i + 1}`}
+                    onClick={() => goTo(i)}
+                    className={`h-2.5 w-2.5 rounded-full transition ${
+                      i === index ? "bg-white" : "bg-white/50 hover:bg-white/80"
+                    }`}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Hero quick blurb */}
+          <div className="mx-auto mt-8 max-w-3xl text-center">
+            <p className="text-base text-slate-600">
+              Verit Global (Delaware C-Corp) is building infrastructure for{" "}
+              <span className="font-semibold text-slate-900">
+                secure, deterministic, and transparent payouts
+              </span>
+              . Designed for investors and partners assessing readiness, risk,
+              and operating model.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Product */}
+      <SectionWrapper id="product" title="Product — VGoS">
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card title="What it is">
+            <ul className="list-disc space-y-2 pl-5 text-sm leading-relaxed text-slate-700">
+              <li>
+                A deterministic payout engine producing bit-reproducible
+                settlement outputs.
+              </li>
+              <li>
+                Built for auditability: canonical serialization, replay checks,
+                and reason-coded gating before funds move.
+              </li>
+              <li>Composable with existing payout rails and data sources.</li>
+            </ul>
+          </Card>
+          <Card title="Why it matters">
+            <ul className="list-disc space-y-2 pl-5 text-sm leading-relaxed text-slate-700">
+              <li>Prevents mispays from drift, rounding, or migrations.</li>
+              <li>Enables safe canaries and rapid rollback.</li>
+              <li>Clear controls & evidence for compliance and finance.</li>
+            </ul>
+          </Card>
+        </div>
+      </SectionWrapper>
+
+      {/* Industry */}
+      <SectionWrapper id="industry" title="Industry Focus">
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card title="Ticketed Events (Sports & Concerts)">
+            <p className="text-sm leading-relaxed text-slate-700">
+              Settlement across promoters, venues, artists/teams, merch, fees,
+              and taxes benefits from deterministic allocation, auditability,
+              and transparent reason codes.
+            </p>
+            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-700">
+              <li>Cross-party revenue share accuracy and proofs</li>
+              <li>Refunds/chargebacks handled with traceable replays</li>
+              <li>Geo & tax policy gating before disbursement</li>
+            </ul>
+          </Card>
+          <Card title="Other target verticals (preview)">
+            <ul className="list-disc space-y-2 pl-5 text-sm leading-relaxed text-slate-700">
+              <li>Marketplaces & Gig Platforms</li>
+              <li>Creator / Ads / Affiliate Networks</li>
+              <li>B2B Platforms with multi-party settlement</li>
+            </ul>
+          </Card>
+        </div>
+      </SectionWrapper>
+
+      {/* Tech & Security */}
+      <SectionWrapper id="tech" title="Tech & Security">
+        <div className="grid gap-6 md:grid-cols-3">
+          <Card title="Determinism">
+            <p className="text-sm leading-relaxed text-slate-700">
+              Canonical folds, fixed-point arithmetic, and transcripted outputs
+              allow byte-identical re-computation.
+            </p>
+          </Card>
+          <Card title="Controls & Gating">
+            <p className="text-sm leading-relaxed text-slate-700">
+              Funds move only after replay checks pass and acceptance criteria
+              (e.g., finance ACK, compliance checks) meet quorum & freshness.
+            </p>
+          </Card>
+          <Card title="Security & Privacy">
+            <p className="text-sm leading-relaxed text-slate-700">
+              Content-addressed transcripts, least-privilege service design, and
+              environment isolation. Designed to integrate with customer IAM and
+              key management.
+            </p>
+          </Card>
+        </div>
+      </SectionWrapper>
+
+      {/* Investors */}
+      <SectionWrapper id="investors" title="For Investors">
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card title="What we’re building now">
+            <ul className="list-disc space-y-2 pl-5 text-sm leading-relaxed text-slate-700">
+              <li>MVP: deterministic settlement core, transcripts, gating</li>
+              <li>Early design partners in ticketed events</li>
+              <li>Audit-ready demos and sample data rooms</li>
+            </ul>
+          </Card>
+          <Card title="Why this team / timing">
+            <ul className="list-disc space-y-2 pl-5 text-sm leading-relaxed text-slate-700">
+              <li>Rising scrutiny on payout correctness & controls</li>
+              <li>Modern data stacks enable deterministic workflows</li>
+              <li>Clear wedge: proof-first disbursement</li>
+            </ul>
+          </Card>
+        </div>
+      </SectionWrapper>
+
+      {/* About */}
+      <SectionWrapper id="about" title="About Verit Global">
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card title="Company">
+            <p className="text-sm leading-relaxed text-slate-700">
+              Verit Global, Inc. (Delaware C-Corp). Building VGoS: a
+              deterministic payout engine focused on correctness,
+              auditability, and governance.
+            </p>
+          </Card>
+          <Card title="What we value">
+            <ul className="list-disc space-y-2 pl-5 text-sm leading-relaxed text-slate-700">
+              <li>Evidence over assertion</li>
+              <li>Operational excellence & simplicity</li>
+              <li>Security by design</li>
+            </ul>
+          </Card>
+        </div>
+      </SectionWrapper>
+
+      {/* Contact */}
+      <SectionWrapper id="contact" title="Contact">
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card title="Get in touch">
+            <p className="text-sm leading-relaxed text-slate-700">
+              Interested in partnering or investing? Send a note—happy to share
+              more details and context.
+            </p>
+            <form
+              className="mt-4 space-y-3"
+              method="POST"
+              action="https://formspree.io/f/yourid" // ← Replace with your Formspree endpoint
+            >
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="block text-sm">
+                  <span className="mb-1 block text-slate-700">Name</span>
+                  <input
+                    name="name"
+                    required
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm outline-none ring-0 placeholder:text-slate-400 focus:border-slate-400"
+                    placeholder="Your name"
+                  />
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-slate-700">Email</span>
+                  <input
+                    type="email"
+                    name="email"
+                    required
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm outline-none ring-0 placeholder:text-slate-400 focus:border-slate-400"
+                    placeholder="you@company.com"
+                  />
+                </label>
+              </div>
+              <label className="block text-sm">
+                <span className="mb-1 block text-slate-700">Company</span>
+                <input
+                  name="company"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm outline-none ring-0 placeholder:text-slate-400 focus:border-slate-400"
+                  placeholder="(optional)"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block text-slate-700">Message</span>
+                <textarea
+                  name="message"
+                  rows={5}
+                  required
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm outline-none ring-0 placeholder:text-slate-400 focus:border-slate-400"
+                  placeholder="How can we help?"
+                />
+              </label>
+              <button
+                type="submit"
+                className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow hover:bg-slate-800"
+              >
+                Send
+              </button>
+            </form>
+          </Card>
+
+          <Card title="Company details">
+            <ul className="space-y-2 text-sm leading-relaxed text-slate-700">
+              <li>
+                <span className="font-medium text-slate-900">Legal:</span>{" "}
+                Verit Global, Inc. (Delaware C-Corp)
+              </li>
+              <li>
+                <span className="font-medium text-slate-900">Product:</span>{" "}
+                VGoS — deterministic payout engine
+              </li>
+              <li>
+                <span className="font-medium text-slate-900">Deployments:</span>{" "}
+                Vercel (frontend); customer-side integrations for data & rails
+              </li>
+              <li>
+                <span className="font-medium text-slate-900">Email:</span>{" "}
+                contact@verit.global (example)
+              </li>
+            </ul>
+          </Card>
+        </div>
+      </SectionWrapper>
+
+      {/* Footer */}
+      <footer className="mt-16 border-t border-slate-200">
+        <div className="mx-auto max-w-7xl px-4 py-8 text-center text-sm text-slate-500 md:px-6">
+          © {new Date().getFullYear()} Verit Global, Inc. All rights reserved.
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+/* ---------- Helpers ---------- */
+
+function SectionWrapper({
+  id,
+  title,
+  children,
+}: {
+  id: SectionId;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section id={id} className="py-10 sm:py-12 md:py-16">
+      <div className="mx-auto max-w-7xl px-4 md:px-6">
+        <div className="mb-6 flex items-end justify-between gap-4">
+          <h2 className="text-xl font-semibold text-slate-900 sm:text-2xl">
+            {title}
+          </h2>
+          <a
+            href="#home"
+            className="hidden text-xs text-slate-500 hover:text-slate-700 md:inline"
+            title="Back to top"
+          >
+            ↑ top
+          </a>
+        </div>
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function Card({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h3 className="text-base font-semibold text-slate-900">{title}</h3>
+      <div className="mt-3">{children}</div>
+    </div>
+  );
+}
