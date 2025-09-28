@@ -1,5 +1,14 @@
 {
   "functions": {
+    "*": {
+      "includeFiles": "exclusive/downloads/**"
+    },
+    "src/app/exclusive/downloads/[file]/route.ts": {
+      "includeFiles": "exclusive/downloads/**"
+    },
+    "src/app/exclusive/downloads/[file]/route": {
+      "includeFiles": "exclusive/downloads/**"
+    },
     "app/exclusive/downloads/[file]/route.ts": {
       "includeFiles": "exclusive/downloads/**"
     },
