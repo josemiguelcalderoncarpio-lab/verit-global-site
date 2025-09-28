@@ -5,15 +5,15 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 
-export const runtime = "nodejs";          // FS access requires Node runtime (not Edge)
-export const dynamic = "force-dynamic";   // avoid static optimization
+export const runtime = "nodejs";        // needed for FS access
+export const dynamic = "force-dynamic"; // do not statically optimize
 
-/* ──────────────────────────────────────────────────────────────────────────────
+/* ────────────────────────────────────────────────────────────────────────────
    Robust path resolution for production bundles
    - Tries common locations first
    - Falls back to a shallow, one-time search under /var/task
    - Caches results for this Lambda’s lifetime
-   ──────────────────────────────────────────────────────────────────────────── */
+   ────────────────────────────────────────────────────────────────────────── */
 const FILE_CACHE = new Map<string, string>();
 
 function tryCommonSpots(filename: string): string | null {
@@ -52,12 +52,8 @@ async function searchOnceUnderTask(filename: string): Promise<string | null> {
     for (const e of entries) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) {
-        // Only descend into plausible places (keeps search fast)
-        if (
-          p.includes("exclusive") ||
-          p.includes(".next") ||
-          p === root
-        ) {
+        // only descend into plausible places (keeps search fast)
+        if (p.includes("exclusive") || p.includes(".next") || p === root) {
           queue.push(p);
         }
       } else if (e.isFile() && e.name === filename) {
@@ -86,33 +82,21 @@ async function resolveExclusivePath(filename: string): Promise<string | null> {
   return null;
 }
 
-/* ──────────────────────────────────────────────────────────────────────────────
-   Types: support both Next versions where context.params is {file} or Promise<{file}>
-   ──────────────────────────────────────────────────────────────────────────── */
+/* ────────────────────────────────────────────────────────────────────────────
+   Helpers & types
+   ────────────────────────────────────────────────────────────────────────── */
 type Params = { file: string };
-type Ctx =
-  | { params: Params }
-  | { params: Promise<Params> };
 
-function isPromiseParams(p: Params | Promise<Params>): p is Promise<Params> {
-  return typeof (p as any)?.then === "function";
+function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "then" in (value as object) &&
+    typeof (value as { then: unknown }).then === "function"
+  );
 }
 
-/* ──────────────────────────────────────────────────────────────────────────────
-   Security helpers
-   ──────────────────────────────────────────────────────────────────────────── */
 const ALLOWED_EXT = new Set([".pdf", ".zip"]);
-
-function sanitizeAndValidateFilename(raw: string): string | null {
-  // Decode URI components (handles %20, etc.)
-  const decoded = safeDecodeURIComponent(raw);
-  const base = path.basename(decoded); // strip any path traversal
-  const ext = path.extname(base).toLowerCase();
-  if (!ALLOWED_EXT.has(ext)) return null;
-  // optional: block sneaky traversal patterns
-  if (base.includes("..") || base.includes("/") || base.includes("\\")) return null;
-  return base;
-}
 
 function safeDecodeURIComponent(s: string): string {
   try {
@@ -122,32 +106,39 @@ function safeDecodeURIComponent(s: string): string {
   }
 }
 
-/* ──────────────────────────────────────────────────────────────────────────────
-   MAIN HANDLER
-   ──────────────────────────────────────────────────────────────────────────── */
-export async function GET(req: NextRequest, context: Ctx) {
-  // ── 1) KEEP YOUR EXISTING GATING/AUTH LOGIC HERE (unchanged) ───────────────
-  // If your current file had email gating (cookies/tokens/domain checks/etc.),
-  // move that exact block here. Return the same 401/redirect you already use
-  // when access should be denied. Nothing else in this file depends on it.
-  //
-  // Example placeholder (DELETE this comment & use YOUR existing code):
-  // const authorized = await yourAuthorizeFunction(req);
-  // if (!authorized) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+function sanitizeAndValidateFilename(raw: string): string | null {
+  const decoded = safeDecodeURIComponent(raw);
+  const base = path.basename(decoded); // strip any traversal
+  const ext = path.extname(base).toLowerCase();
+  if (!ALLOWED_EXT.has(ext)) return null;
+  if (base.includes("..") || base.includes("/") || base.includes("\\")) return null;
+  return base;
+}
 
-  // ── 2) Get filename from params, supporting both typed shapes ──────────────
-  const p = isPromiseParams(context.params) ? await context.params : context.params;
-  const rawFile = p.file;
+/* ────────────────────────────────────────────────────────────────────────────
+   Main handler
+   ────────────────────────────────────────────────────────────────────────── */
+export async function GET(
+  req: NextRequest,
+  context: { params: Params | Promise<Params> }
+) {
+  // ── 1) KEEP YOUR EXISTING GATING/AUTH LOGIC HERE (unchanged) ─────────────
+  // e.g. if (!authorized) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  // ── 3) Sanitize & validate ────────────────────────────────────────────────
+  // ── 2) Read params (supports both direct and Promise forms) ──────────────
+  const maybeParams = context.params as unknown;
+  const params: Params = isPromiseLike<Params>(maybeParams)
+    ? await maybeParams
+    : (maybeParams as Params);
+
+  const rawFile = params.file;
   const file = sanitizeAndValidateFilename(rawFile);
   if (!file) {
     return NextResponse.json({ error: "invalid_filename" }, { status: 400 });
   }
 
-  // ── 4) Resolve absolute path robustly (prod-safe) ─────────────────────────
+  // ── 3) Resolve absolute path robustly (prod-safe) ────────────────────────
   const abs = await resolveExclusivePath(file);
-
   if (!abs) {
     console.warn("exclusive file not found (after include + search)", {
       file,
@@ -162,26 +153,24 @@ export async function GET(req: NextRequest, context: Ctx) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
-  // ── 5) Stream the file (keeps your download headers/behavior) ─────────────
+  // ── 4) Stream the file (keeps your download behavior/headers) ───────────
   const stat = await fsp.stat(abs);
-  const stream = fs.createReadStream(abs);
+  const nodeStream = fs.createReadStream(abs);
 
-  // Choose content-type from extension
   const lower = file.toLowerCase();
-  const contentType = lower.endsWith(".pdf")
-    ? "application/pdf"
-    : lower.endsWith(".zip")
-    ? "application/zip"
-    : "application/octet-stream";
+  const contentType =
+    lower.endsWith(".pdf")
+      ? "application/pdf"
+      : lower.endsWith(".zip")
+      ? "application/zip"
+      : "application/octet-stream";
 
-  return new Response(stream as unknown as ReadableStream, {
+  return new Response(nodeStream as unknown as ReadableStream, {
     status: 200,
     headers: {
       "Content-Type": contentType,
       "Content-Length": String(stat.size),
-      // keep as attachment (as before) so it downloads after gating
       "Content-Disposition": `attachment; filename="${file}"`,
-      // ensure no caching of gated downloads
       "Cache-Control": "no-store, max-age=0",
     },
   });
