@@ -6,7 +6,6 @@ export const runtime = "nodejs";
 type GateVerdict = "allow" | "block";
 type CountRow = { verdict: GateVerdict; cnt: number };
 
-/** Minimal, generic-free shape of the Neon SQL tag */
 type NeonSql = (
   strings: TemplateStringsArray,
   ...values: unknown[]
@@ -15,13 +14,13 @@ type NeonSql = (
 function getClient(): NeonSql {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("Missing DATABASE_URL");
-  // Cast once to our minimal interface so we don't pull in Neon generics
   return neon(url) as unknown as NeonSql;
 }
 
 async function ensureTable(sql: NeonSql): Promise<void> {
+  // IMPORTANT: one statement per call
+  await sql/* sql */`create schema if not exists verit`;
   await sql/* sql */`
-    create schema if not exists verit;
     create table if not exists verit.gate_event (
       id bigserial primary key,
       ts timestamptz not null default now(),
@@ -30,10 +29,10 @@ async function ensureTable(sql: NeonSql): Promise<void> {
       kill_switch boolean not null default false,
       ip text,
       user_agent text
-    );
-    create index if not exists gate_event_ts_idx on verit.gate_event (ts desc);
-    create index if not exists gate_event_verdict_ts_idx on verit.gate_event (verdict, ts desc);
+    )
   `;
+  await sql/* sql */`create index if not exists gate_event_ts_idx on verit.gate_event (ts desc)`;
+  await sql/* sql */`create index if not exists gate_event_verdict_ts_idx on verit.gate_event (verdict, ts desc)`;
 }
 
 export async function GET(req: Request) {
@@ -61,7 +60,6 @@ export async function GET(req: Request) {
       order by verdict
     `;
 
-    // Narrow unknown → our row type
     const dayRows = dayRowsUnknown as unknown as CountRow[];
     const weekRows = weekRowsUnknown as unknown as CountRow[];
 

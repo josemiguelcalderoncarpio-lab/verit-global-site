@@ -4,16 +4,21 @@ import { neon } from "@neondatabase/serverless";
 export const runtime = "nodejs";
 
 type GateVerdict = "allow" | "block";
+type NeonSql = (
+  strings: TemplateStringsArray,
+  ...values: unknown[]
+) => Promise<unknown[]>;
 
-function getClient() {
+function getClient(): NeonSql {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("Missing DATABASE_URL");
-  return neon(url);
+  return neon(url) as unknown as NeonSql;
 }
 
-async function ensureTable(sql: ReturnType<typeof neon>): Promise<void> {
+async function ensureTable(sql: NeonSql): Promise<void> {
+  // IMPORTANT: one statement per call
+  await sql/* sql */`create schema if not exists verit`;
   await sql/* sql */`
-    create schema if not exists verit;
     create table if not exists verit.gate_event (
       id bigserial primary key,
       ts timestamptz not null default now(),
@@ -22,10 +27,10 @@ async function ensureTable(sql: ReturnType<typeof neon>): Promise<void> {
       kill_switch boolean not null default false,
       ip text,
       user_agent text
-    );
-    create index if not exists gate_event_ts_idx on verit.gate_event (ts desc);
-    create index if not exists gate_event_verdict_ts_idx on verit.gate_event (verdict, ts desc);
+    )
   `;
+  await sql/* sql */`create index if not exists gate_event_ts_idx on verit.gate_event (ts desc)`;
+  await sql/* sql */`create index if not exists gate_event_verdict_ts_idx on verit.gate_event (verdict, ts desc)`;
 }
 
 export async function POST(req: Request) {
@@ -73,7 +78,7 @@ export async function POST(req: Request) {
     `;
 
     return NextResponse.json({ ok: true });
-  } catch (err: unknown) {
+  } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[gate/track] error:", msg);
     return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
