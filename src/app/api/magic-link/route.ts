@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
 import { sql } from "@/lib/db";
+import { ClientSecretCredential } from "@azure/identity";
 
 /* ------------------------------ types ------------------------------ */
 type RowPersonId = { person_id: string };
@@ -26,13 +27,13 @@ export async function OPTIONS() {
 async function sha256Hex(input: string) {
   const data = new TextEncoder().encode(input);
   const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
 function randomToken(bytes = 24) {
   const a = new Uint8Array(bytes);
   crypto.getRandomValues(a);
-  return Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(a, b => b.toString(16).padStart(2, "0")).join("");
 }
 
 function normalizeEmail(raw?: string | null): string | null {
@@ -57,6 +58,42 @@ function pickBool(v: unknown): boolean {
     return s === "1" || s === "true" || s === "yes";
   }
   return false;
+}
+
+/* -------------------- ensure schema / tables (Neon-safe) -------------------- */
+/** IMPORTANT: One statement per call (Neon disallows multi-statement prepared queries). */
+async function ensureTables() {
+  await sql/* sql */`create schema if not exists verit`;
+
+  await sql/* sql */`
+    create table if not exists verit.person (
+      person_id bigserial primary key
+    )
+  `;
+
+  await sql/* sql */`
+    create table if not exists verit.person_email (
+      email text primary key,
+      person_id bigint not null references verit.person(person_id)
+    )
+  `;
+
+  await sql/* sql */`
+    create index if not exists person_email_lower_idx
+      on verit.person_email (lower(email))
+  `;
+
+  await sql/* sql */`
+    create table if not exists verit.magic_link (
+      token_hash text primary key,
+      person_id bigint not null references verit.person(person_id),
+      email text not null,
+      redirect_to text,
+      created_at timestamptz not null default now(),
+      expires_at timestamptz,
+      consumed_at timestamptz
+    )
+  `;
 }
 
 /* ------------------------ person resolution ------------------------ */
@@ -89,77 +126,69 @@ async function getOrCreatePersonId(email: string): Promise<string> {
 
 /* ----------------------------- providers --------------------------- */
 
-/**
- * Send via Microsoft Graph (app-only, recommended for serverless).
- * Requires:
- *   M365_TENANT_ID, M365_CLIENT_ID, M365_CLIENT_SECRET
- *   M365_FROM (visible alias) and optionally M365_USER (mailbox to send as; usually same as FROM)
- * Azure App must have "Mail.Send" (Application) permission and admin consent.
- */
+/** Microsoft Graph sendMail (app-only). `saveToSentItems` must be top-level. */
 async function sendMagicLinkM365(to: string, link: string) {
-  const tenant = process.env.M365_TENANT_ID;
-  const clientId = process.env.M365_CLIENT_ID;
-  const clientSecret = process.env.M365_CLIENT_SECRET;
-  const fromAddr = process.env.M365_FROM || process.env.M365_USER;
+  const tenantId = process.env.M365_TENANT_ID!;
+  const clientId = process.env.M365_CLIENT_ID!;
+  const clientSecret = process.env.M365_CLIENT_SECRET!;
+  const fromAddress = process.env.M365_FROM || "no-reply@veritglobal.com";
+  const debug = process.env.EMAIL_DEBUG === "1";
 
-  if (!tenant || !clientId || !clientSecret || !fromAddr) {
-    throw new Error("M365 Graph mail not configured");
+  if (!tenantId || !clientId || !clientSecret || !fromAddress) {
+    throw new Error("M365 credentials not configured");
   }
 
-  // 1) App-only token
-  const tokenRes = await fetch(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      scope: "https://graph.microsoft.com/.default",
-      grant_type: "client_credentials",
-    }),
-  });
-  if (!tokenRes.ok) {
-    const txt = await tokenRes.text().catch(() => "");
-    throw new Error(`oauth_failed: ${tokenRes.status} ${txt}`);
-  }
-  const tok = (await tokenRes.json()) as { access_token: string };
+  const credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
+  const graphToken = await credential.getToken("https://graph.microsoft.com/.default");
+  if (!graphToken?.token) throw new Error("Failed to get Microsoft Graph token");
 
-  // 2) Send email via Graph
+  const subject = "Your secure access link";
   const html = `
-    <div style="font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif">
-      <p>Hi,</p>
-      <p>Click the button below to verify your email and continue your download.</p>
-      <p><a href="${link}" style="background:#0f172a;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;display:inline-block">Verify & Continue</a></p>
-      <p>If the button doesn’t work, copy this link:<br><code>${link}</code></p>
-      <p>— Verit Global</p>
+    <div style="font-family:system-ui,Segoe UI,Arial">
+      <h2>Your secure access link</h2>
+      <p><a href="${link}" style="display:inline-block;background:#111;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none">Continue</a></p>
+      <p>If the button doesn’t work, copy this URL:</p>
+      <p style="word-break:break-all"><a href="${link}">${link}</a></p>
     </div>
   `;
 
-  const mailRes = await fetch(
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(fromAddr)}/sendMail`,
+  // saveToSentItems is OUTSIDE message
+  const body = {
+    message: {
+      subject,
+      body: { contentType: "HTML", content: html },
+      toRecipients: [{ emailAddress: { address: to } }],
+      // When calling /users/{from}/sendMail the sender is implied by the route.
+      // You may optionally include replyTo if desired:
+      replyTo: [{ emailAddress: { address: fromAddress } }],
+    },
+    saveToSentItems: false,
+  };
+
+  const resp = await fetch(
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(fromAddress)}/sendMail`,
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${tok.access_token}`,
-        "content-type": "application/json",
+        Authorization: `Bearer ${graphToken.token}`,
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        message: {
-          subject: "Your Verit download link",
-          body: { contentType: "HTML", content: html },
-          toRecipients: [{ emailAddress: { address: to } }],
-          from: { emailAddress: { address: fromAddr } },
-        },
-        saveToSentItems: "false",
-      }),
+      body: JSON.stringify(body),
     }
   );
 
-  if (!mailRes.ok) {
-    const txt = await mailRes.text().catch(() => "");
-    throw new Error(`send_failed: ${mailRes.status} ${txt}`);
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => "");
+    if (debug) {
+      throw new Error(`Graph sendMail failed (${resp.status}): ${txt || "<no body>"}`);
+    }
+    throw new Error("Graph sendMail failed");
   }
+
+  if (debug) console.log("[magic-link] Graph sendMail accepted for", to);
 }
 
+/** Resend fallback */
 async function sendMagicLinkResend(to: string, link: string) {
   const apiKey = process.env.RESEND_API_KEY!;
   const from = process.env.RESEND_FROM || "Verit Global <onboarding@resend.dev>";
@@ -176,7 +205,13 @@ async function sendMagicLinkResend(to: string, link: string) {
   const resp = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from, to, subject: "Your secure access link", html, text: `Your secure link:\n\n${link}\n` }),
+    body: JSON.stringify({
+      from,
+      to,
+      subject: "Your secure access link",
+      html,
+      text: `Your secure link:\n\n${link}\n`,
+    }),
   });
   if (!resp.ok) throw new Error(`Resend ${resp.status}: ${await resp.text()}`);
 }
@@ -185,6 +220,9 @@ async function sendMagicLinkResend(to: string, link: string) {
 
 export async function POST(req: NextRequest) {
   try {
+    // Make sure tables exist (safe/no-op when already present)
+    await ensureTables();
+
     // parse body (json or form)
     const ct = (req.headers.get("content-type") || "").toLowerCase();
     let body: PostBody = {};
@@ -232,8 +270,8 @@ export async function POST(req: NextRequest) {
         else throw new Error(`Unknown EMAIL_PROVIDER: ${provider}`);
       } catch (err: unknown) {
         console.error("[magic-link] send failed]:", err);
+        const msg = err instanceof Error ? err.message : String(err);
         if (process.env.EMAIL_DEBUG === "1") {
-          const msg = err instanceof Error ? err.message : String(err);
           return withCors(NextResponse.json({ ok: false, error: "send_failed", details: msg }, { status: 502 }));
         }
         return withCors(NextResponse.json({ ok: false, error: "send_failed" }, { status: 502 }));
@@ -251,6 +289,9 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
+    // Safe to call (no-op if already created), helps first-ever GET path too
+    await ensureTables();
+
     const url = new URL(req.url);
     const token = url.searchParams.get("token") || "";
     const go = url.searchParams.get("go") || undefined;
@@ -272,9 +313,7 @@ export async function GET(req: NextRequest) {
     }
 
     // mark consumed (prod column is 'consumed_at'; safe no-op if absent)
-    try {
-      await sql/* sql */`UPDATE verit.magic_link SET consumed_at = now() WHERE token_hash = ${tokenHash}`;
-    } catch {}
+    try { await sql/* sql */`UPDATE verit.magic_link SET consumed_at = now() WHERE token_hash = ${tokenHash}`; } catch {}
 
     const email: string = row.email;
 
@@ -282,7 +321,10 @@ export async function GET(req: NextRequest) {
     const dest = row.redirect_to ?? go ?? "/contact";
     const base = new URL(req.url);
     const origin = `${base.protocol}//${base.host}`;
-    const redirectUrl = /^https?:\/\//i.test(dest) ? dest : `${origin}${dest.startsWith("/") ? "" : "/"}${dest}`;
+    const redirectUrl =
+      /^https?:\/\//i.test(dest)
+        ? dest
+        : `${origin}${dest.startsWith("/") ? "" : "/"}${dest}`;
 
     const res = NextResponse.redirect(redirectUrl, { status: 302 });
 
@@ -307,8 +349,8 @@ export async function GET(req: NextRequest) {
 
     // Plain (NOT encoded) values + legacy aliases
     setAll("vg_user_email", email);
-    setAll("user_email", email); // legacy alias
-    setAll("vg_access_granted", "1"); // legacy boolean gate
+    setAll("user_email", email);        // legacy alias
+    setAll("vg_access_granted", "1");   // legacy boolean gate
     // --------------------------------------------------------------------
 
     return withCors(res);
