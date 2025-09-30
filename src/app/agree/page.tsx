@@ -10,11 +10,8 @@ import BypassBanner from "./BypassBanner";
 export const dynamic = "force-dynamic";
 
 /**
- * When true, we bypass all gating (business email, magic-link, etc.),
- * immediately attempt the download (if the target looks like a file),
- * and then return to the caller.
- *
- * Keep this false for real gating.
+ * Set to true only if you want to temporarily skip gating while debugging.
+ * In production keep this false so magic-link flow is enforced for exclusive files.
  */
 const BYPASS_GATES = false;
 
@@ -48,7 +45,7 @@ type ConsentPayload = {
 
 const LS_KEY = "verit:consent:v1";
 
-/* ===================== Utils (original) ===================== */
+/* ===================== Utils ===================== */
 function isValidEmail(v: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
@@ -74,15 +71,7 @@ function readConsent(): ConsentPayload | null {
   }
 }
 
-/* Gate cookies expected by middleware */
-function setGateCookies(email: string) {
-  const oneYear = 60 * 60 * 24 * 365;
-  // Host-scoped cookies (work on www.veritglobal.com). Add Domain=.veritglobal.com later if you need cross-subdomain.
-  document.cookie = `vg_access_granted=1; Max-Age=${oneYear}; Path=/; Secure; SameSite=Lax`;
-  document.cookie = `vg_user_email=${encodeURIComponent(email || "")}; Max-Age=${oneYear}; Path=/; Secure; SameSite=Lax`;
-}
-
-/* ---------- return helpers (original) ---------- */
+/* ---------- return helpers ---------- */
 function normalizeSameOrigin(v?: string | null): string | null {
   if (!v) return null;
   const t = v.trim();
@@ -110,7 +99,6 @@ function sameOriginReferrer(): string | null {
     return null;
   }
 }
-/** History-first smart return (original) */
 function navigateBackSmart(
   explicit: string | null | undefined,
   router: ReturnType<typeof useRouter>
@@ -118,7 +106,8 @@ function navigateBackSmart(
   const to = explicit ? normalizeSameOrigin(explicit) : null;
 
   if (to && isFilePath(to)) {
-    // File downloads should navigate directly
+    // For direct file URLs we usually just navigate there.
+    // NOTE: when email verification is required, we won't hit this path (we early return after sending the magic link).
     window.location.href = to;
     return;
   }
@@ -167,7 +156,7 @@ function InnerAgree(): React.ReactElement {
   const [err, setErr] = React.useState<string | null>(null);
   const [ok, setOk] = React.useState(false);
 
-  // Magic-link state (original)
+  // Magic-link UX state
   const [emailSent, setEmailSent] = React.useState(false);
   const [lastSentTo, setLastSentTo] = React.useState<string | null>(null);
 
@@ -175,12 +164,12 @@ function InnerAgree(): React.ReactElement {
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => setMounted(true), []);
 
-  // Back action (original)
+  // Back action
   const goBack = React.useCallback(() => {
     navigateBackSmart(returnTo || null, router);
   }, [router, returnTo]);
 
-  // Prefill from saved consent (original)
+  // Prefill from saved consent
   React.useEffect(() => {
     const saved = readConsent();
     if (!saved) return;
@@ -190,9 +179,8 @@ function InnerAgree(): React.ReactElement {
     setCompany((v) => v || saved.company || "");
   }, []);
 
-  /* ----------------- TEMP BYPASS: always succeed & download ----------------- */
+  /* ----------------- optional dev bypass ----------------- */
   const bypassAndFinish = React.useCallback(async () => {
-    // 1) best-effort store a minimal consent payload (keeps analytics continuity)
     const payload: ConsentPayload = {
       name: name || "(bypass)",
       email: email || "bypass@example.com",
@@ -206,8 +194,6 @@ function InnerAgree(): React.ReactElement {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify(payload));
     } catch {}
-
-    // 2) fire-and-forget survey log like before (kept original shape)
     try {
       await fetch("/api/survey", {
         method: "POST",
@@ -220,11 +206,6 @@ function InnerAgree(): React.ReactElement {
         }),
       });
     } catch {}
-
-    // 2.5) set the gate cookies so middleware will allow on return
-    setGateCookies(email || "bypass@example.com");
-
-    // 3) if it looks like a file, trigger download first
     if (returnTo && isFilePath(returnTo)) {
       try {
         const a = document.createElement("a");
@@ -239,14 +220,12 @@ function InnerAgree(): React.ReactElement {
         window.open(returnTo, "_blank", "noopener,noreferrer");
       }
     }
-
-    // 4) then navigate back to where they came from
     navigateBackSmart(returnTo || null, router);
   }, [company, email, name, needBusiness, purpose, returnTo, role, router]);
 
-  /* ----------------- ORIGINAL: magic-link sender (kept; unused in bypass) -----------------
+  /* ----------------- MAGIC LINK SENDER ----------------- */
   async function sendMagicLink(toEmail: string) {
-    const redirect_to = returnTo || "/";
+    const redirect_to = returnTo || "/"; // where to go after clicking the email link
     const res = await fetch("/api/magic-link", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -259,41 +238,41 @@ function InnerAgree(): React.ReactElement {
     setEmailSent(true);
     setLastSentTo(toEmail);
   }
-  --------------------------------------------------------------------- */
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setErr(null);
     setSubmitting(true);
 
-    // ---------------- BYPASS BLOCK ----------------
+    // ---------------- DEV BYPASS ----------------
     if (BYPASS_GATES) {
       setOk(true);
       await bypassAndFinish();
       setSubmitting(false);
       return;
     }
-    // ---------------- END BYPASS ------------------
+    // ---------------- END BYPASS ----------------
 
-    // ---------------- ORIGINAL VALIDATION (kept) ----------------
+    // ---------------- VALIDATION ----------------
     const nameVal = name.trim();
     const emailVal = email.trim().toLowerCase();
     const roleVal = role.trim();
     const companyVal = company.trim();
 
-    if (!nameVal) return setErr("Please enter your name.");
-    if (!isValidEmail(emailVal)) return setErr("Please enter a valid email address.");
+    if (!nameVal) { setSubmitting(false); return setErr("Please enter your name."); }
+    if (!isValidEmail(emailVal)) { setSubmitting(false); return setErr("Please enter a valid email address."); }
 
     const dom = emailDomain(emailVal);
-    if (!dom) return setErr("Email must include a domain.");
+    if (!dom) { setSubmitting(false); return setErr("Email must include a domain."); }
 
     if (needBusiness && !isCorporateDomain(dom)) {
+      setSubmitting(false);
       return setErr("A business / organization email is required for this download.");
     }
 
-    if (!roleVal) return setErr("Please enter your role/title.");
-    if (!purpose) return setErr("Please select a purpose.");
-    if (!agree) return setErr("Please accept the Terms and Privacy Policy to proceed.");
+    if (!roleVal) { setSubmitting(false); return setErr("Please enter your role/title."); }
+    if (!purpose) { setSubmitting(false); return setErr("Please select a purpose."); }
+    if (!agree) { setSubmitting(false); return setErr("Please accept the Terms and Privacy Policy to proceed."); }
 
     const payload: ConsentPayload = {
       name: nameVal,
@@ -323,21 +302,26 @@ function InnerAgree(): React.ReactElement {
       });
     } catch {}
 
-    // Make cookies available for middleware before we redirect/download
-    setGateCookies(emailVal);
-
-    setOk(true);
-    setSubmitting(false);
-
-    if (requireEmailVerification) {
-      /* try {
+    // ---------------- BEHAVIOR ----------------
+    // If target is EXCLUSIVE asset, require email verification:
+    if (requireEmailVerification && isFilePath(returnTo || "")) {
+      try {
         await sendMagicLink(emailVal);
+        setOk(true);
+        // Stop here. We do NOT download automatically. User must click email.
+        // Keep them on the page with a success banner.
+        setSubmitting(false);
+        return;
       } catch {
         setErr("We couldn't send the verification email. Please try again.");
+        setSubmitting(false);
+        return;
       }
-      return; */
-      // Kept intentionally commented while verification flow is not enabled.
     }
+
+    // Otherwise (non-exclusive), proceed to download / navigate
+    setOk(true);
+    setSubmitting(false);
 
     if (returnTo && isFilePath(returnTo)) {
       // Trigger download
@@ -357,10 +341,9 @@ function InnerAgree(): React.ReactElement {
 
     // Return to caller (history-first)
     navigateBackSmart(returnTo || null, router);
-    // ---------------- END ORIGINAL ----------------
   }
 
-  // If user edits the email, clear previous “sent” state (original)
+  // If user edits the email, clear previous “sent” state
   const handleEmailChange = (v: string) => {
     setEmail(v);
     setEmailSent(false);
@@ -381,7 +364,7 @@ function InnerAgree(): React.ReactElement {
           <BypassBanner enabled={BYPASS_GATES} />
         </header>
 
-        {/* UI kept the same so it looks familiar */}
+        {/* Form */}
         <form onSubmit={onSubmit} noValidate suppressHydrationWarning>
           <label className="mb-3 block">
             <span className="mb-1 block text-sm font-medium text-slate-800">Name</span>
@@ -488,9 +471,15 @@ function InnerAgree(): React.ReactElement {
             </div>
           )}
 
-          {ok && (
+          {/* Success banners */}
+          {ok && !emailSent && (
             <div className="mb-3 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-              We’re processing your request…
+              Thanks — processing your request…
+            </div>
+          )}
+          {emailSent && (
+            <div className="mb-3 rounded-lg border border-indigo-300 bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
+              We’ve emailed a secure link to <strong>{lastSentTo}</strong>. Please open it to start your download.
             </div>
           )}
 
@@ -504,7 +493,6 @@ function InnerAgree(): React.ReactElement {
               {submitting ? "Saving…" : "Agree & continue"}
             </button>
 
-            {/* Cancel should always leave this page */}
             <button
               type="button"
               onClick={() => navigateBackSmart(returnTo || null, router)}
