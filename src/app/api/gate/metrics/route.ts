@@ -1,18 +1,25 @@
-﻿// @ts-nocheck
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import { neon } from "@neondatabase/serverless";
 
 export const runtime = "nodejs";
 
 type GateVerdict = "allow" | "block";
+type CountRow = { verdict: GateVerdict; cnt: number };
 
-function getClient() {
+/** Minimal, generic-free shape of the Neon SQL tag */
+type NeonSql = (
+  strings: TemplateStringsArray,
+  ...values: unknown[]
+) => Promise<unknown[]>;
+
+function getClient(): NeonSql {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("Missing DATABASE_URL");
-  return neon(url);
+  // Cast once to our minimal interface so we don't pull in Neon generics
+  return neon(url) as unknown as NeonSql;
 }
 
-async function ensureTable(sql: any): Promise<void> {
+async function ensureTable(sql: NeonSql): Promise<void> {
   await sql/* sql */`
     create schema if not exists verit;
     create table if not exists verit.gate_event (
@@ -30,36 +37,39 @@ async function ensureTable(sql: any): Promise<void> {
 }
 
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const debug = url.searchParams.get("debug") === "1";
+  const debug = new URL(req.url).searchParams.get("debug") === "1";
 
   try {
     const sql = getClient();
     await ensureTable(sql);
 
-    const dayRows = await sql/* sql */`
+    const dayRowsUnknown = await sql/* sql */`
       with span as (select now() - interval '24 hours' as since)
       select verdict::text as verdict, count(*)::int as cnt
       from verit.gate_event, span
       where ts >= span.since
       group by verdict
       order by verdict
-    ` as any[];
+    `;
 
-    const weekRows = await sql/* sql */`
+    const weekRowsUnknown = await sql/* sql */`
       with span as (select now() - interval '7 days' as since)
       select verdict::text as verdict, count(*)::int as cnt
       from verit.gate_event, span
       where ts >= span.since
       group by verdict
       order by verdict
-    ` as any[];
+    `;
 
-    const last24h = { allow: 0, block: 0 } as Record<GateVerdict, number>;
-    for (const r of dayRows ?? []) last24h[r.verdict as GateVerdict] = r.cnt;
+    // Narrow unknown → our row type
+    const dayRows = dayRowsUnknown as unknown as CountRow[];
+    const weekRows = weekRowsUnknown as unknown as CountRow[];
 
-    const last7d = { allow: 0, block: 0 } as Record<GateVerdict, number>;
-    for (const r of weekRows ?? []) last7d[r.verdict as GateVerdict] = r.cnt;
+    const last24h: Record<GateVerdict, number> = { allow: 0, block: 0 };
+    for (const r of dayRows) last24h[r.verdict] = r.cnt;
+
+    const last7d: Record<GateVerdict, number> = { allow: 0, block: 0 };
+    for (const r of weekRows) last7d[r.verdict] = r.cnt;
 
     return NextResponse.json({ ok: true, last24h, last7d });
   } catch (err) {
