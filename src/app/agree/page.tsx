@@ -1,13 +1,24 @@
+// src/app/agree/page.tsx
 "use client";
 
 import * as React from "react";
 import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { emailDomain, isCorporateDomain } from "@/lib/isCorporateDomain";
+import BypassBanner from "./BypassBanner";
 
 export const dynamic = "force-dynamic";
 
-/* ===================== Original Implementation wrapped in Suspense ===================== */
+/**
+ * When true, we bypass all gating (business email, magic-link, etc.),
+ * immediately attempt the download (if the target looks like a file),
+ * and then return to the caller.
+ *
+ * Keep this false for real gating.
+ */
+const BYPASS_GATES = false;
+
+/* ===================== Wrapper ===================== */
 export default function AgreePage() {
   return (
     <Suspense fallback={null}>
@@ -16,8 +27,7 @@ export default function AgreePage() {
   );
 }
 
-/* ===================== The original page contents live here unchanged ===================== */
-
+/* ===================== Types ===================== */
 type Purpose =
   | "investor_kit"
   | "partner_deck"
@@ -38,7 +48,7 @@ type ConsentPayload = {
 
 const LS_KEY = "verit:consent:v1";
 
-/* ---------- utilities (kept from your version) ---------- */
+/* ===================== Utils (original) ===================== */
 function isValidEmail(v: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
@@ -64,19 +74,27 @@ function readConsent(): ConsentPayload | null {
   }
 }
 
-/* ---------- helpers for robust return behavior ---------- */
+/* Gate cookies expected by middleware */
+function setGateCookies(email: string) {
+  const oneYear = 60 * 60 * 24 * 365;
+  // Host-scoped cookies (work on www.veritglobal.com). Add Domain=.veritglobal.com later if you need cross-subdomain.
+  document.cookie = `vg_access_granted=1; Max-Age=${oneYear}; Path=/; Secure; SameSite=Lax`;
+  document.cookie = `vg_user_email=${encodeURIComponent(email || "")}; Max-Age=${oneYear}; Path=/; Secure; SameSite=Lax`;
+}
+
+/* ---------- return helpers (original) ---------- */
 function normalizeSameOrigin(v?: string | null): string | null {
   if (!v) return null;
   const t = v.trim();
   try {
     if (/^https?:\/\//i.test(t)) {
       const u = new URL(t);
-      if (u.origin !== window.location.origin) return null;
+      if (typeof window !== "undefined" && u.origin !== window.location.origin) return null;
       return (u.pathname || "/") + (u.search || "");
     }
     if (t.startsWith("/")) return t;
-    const u = new URL(t, window.location.href);
-    if (u.origin !== window.location.origin) return null;
+    const u = new URL(t, typeof window !== "undefined" ? window.location.href : "http://x/");
+    if (typeof window !== "undefined" && u.origin !== window.location.origin) return null;
     return (u.pathname || "/") + (u.search || "");
   } catch {
     return null;
@@ -84,21 +102,15 @@ function normalizeSameOrigin(v?: string | null): string | null {
 }
 function sameOriginReferrer(): string | null {
   try {
-    if (!document.referrer) return null;
+    if (typeof document === "undefined" || !document.referrer) return null;
     const u = new URL(document.referrer);
-    if (u.origin !== window.location.origin) return null;
+    if (typeof window !== "undefined" && u.origin !== window.location.origin) return null;
     return (u.pathname || "/") + (u.search || "");
   } catch {
     return null;
   }
 }
-/** History-first smart return
- * 1) If explicit target is a file → direct navigate (href)
- * 2) Else if browser has real history → history.back()
- * 3) Else if explicit same-origin target exists and is not '/product' → router.replace(target)
- * 4) Else if same-origin referrer exists and is not '/product' → router.replace(referrer)
- * 5) Else → router.replace('/')  (no /contact)
- */
+/** History-first smart return (original) */
 function navigateBackSmart(
   explicit: string | null | undefined,
   router: ReturnType<typeof useRouter>
@@ -106,6 +118,7 @@ function navigateBackSmart(
   const to = explicit ? normalizeSameOrigin(explicit) : null;
 
   if (to && isFilePath(to)) {
+    // File downloads should navigate directly
     window.location.href = to;
     return;
   }
@@ -125,7 +138,8 @@ function navigateBackSmart(
   router.replace("/");
 }
 
-function InnerAgree() {
+/* ===================== Page ===================== */
+function InnerAgree(): React.ReactElement {
   const router = useRouter();
   const params = useSearchParams();
 
@@ -137,7 +151,7 @@ function InnerAgree() {
     params.get("go") ||
     null;
 
-  const returnTo = normalizeSameOrigin(explicitParam) || ""; // keep original variable name for downstream logic
+  const returnTo = normalizeSameOrigin(explicitParam) || "";
   const needBusiness =
     params.get("need") === "business" || (returnTo ? isFilePath(returnTo) : false);
   const requireEmailVerification = returnTo ? isExclusivePath(returnTo) : false;
@@ -153,7 +167,7 @@ function InnerAgree() {
   const [err, setErr] = React.useState<string | null>(null);
   const [ok, setOk] = React.useState(false);
 
-  // Magic-link state
+  // Magic-link state (original)
   const [emailSent, setEmailSent] = React.useState(false);
   const [lastSentTo, setLastSentTo] = React.useState<string | null>(null);
 
@@ -161,11 +175,12 @@ function InnerAgree() {
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => setMounted(true), []);
 
-  // Replace hardcoded /contact: use smart history-first return
+  // Back action (original)
   const goBack = React.useCallback(() => {
     navigateBackSmart(returnTo || null, router);
   }, [router, returnTo]);
 
+  // Prefill from saved consent (original)
   React.useEffect(() => {
     const saved = readConsent();
     if (!saved) return;
@@ -175,13 +190,67 @@ function InnerAgree() {
     setCompany((v) => v || saved.company || "");
   }, []);
 
+  /* ----------------- TEMP BYPASS: always succeed & download ----------------- */
+  const bypassAndFinish = React.useCallback(async () => {
+    // 1) best-effort store a minimal consent payload (keeps analytics continuity)
+    const payload: ConsentPayload = {
+      name: name || "(bypass)",
+      email: email || "bypass@example.com",
+      role: role || "(bypass)",
+      company: company || undefined,
+      purpose,
+      agreed: true,
+      at: new Date().toISOString(),
+      version: "v1",
+    };
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(payload));
+    } catch {}
+
+    // 2) fire-and-forget survey log like before (kept original shape)
+    try {
+      await fetch("/api/survey", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "consent",
+          needBusiness,
+          ...payload,
+          asset: returnTo && isFilePath(returnTo) ? returnTo : undefined,
+        }),
+      });
+    } catch {}
+
+    // 2.5) set the gate cookies so middleware will allow on return
+    setGateCookies(email || "bypass@example.com");
+
+    // 3) if it looks like a file, trigger download first
+    if (returnTo && isFilePath(returnTo)) {
+      try {
+        const a = document.createElement("a");
+        a.href = returnTo;
+        a.download = "";
+        a.rel = "noopener";
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } catch {
+        window.open(returnTo, "_blank", "noopener,noreferrer");
+      }
+    }
+
+    // 4) then navigate back to where they came from
+    navigateBackSmart(returnTo || null, router);
+  }, [company, email, name, needBusiness, purpose, returnTo, role, router]);
+
+  /* ----------------- ORIGINAL: magic-link sender (kept; unused in bypass) -----------------
   async function sendMagicLink(toEmail: string) {
-    // Send the caller path back to your API (fallback to '/' not '/contact')
-    const go = returnTo || "/";
+    const redirect_to = returnTo || "/";
     const res = await fetch("/api/magic-link", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: toEmail, go }),
+      body: JSON.stringify({ email: toEmail, redirect_to }),
     });
     if (!res.ok) {
       const j = await res.json().catch(() => ({}));
@@ -190,26 +259,23 @@ function InnerAgree() {
     setEmailSent(true);
     setLastSentTo(toEmail);
   }
-
-  async function triggerPublicDownload() {
-    try {
-      const a = document.createElement("a");
-      a.href = returnTo;
-      a.download = "";
-      a.rel = "noopener";
-      a.style.display = "none";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    } catch {
-      window.open(returnTo, "_blank", "noopener,noreferrer");
-    }
-  }
+  --------------------------------------------------------------------- */
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setErr(null);
+    setSubmitting(true);
 
+    // ---------------- BYPASS BLOCK ----------------
+    if (BYPASS_GATES) {
+      setOk(true);
+      await bypassAndFinish();
+      setSubmitting(false);
+      return;
+    }
+    // ---------------- END BYPASS ------------------
+
+    // ---------------- ORIGINAL VALIDATION (kept) ----------------
     const nameVal = name.trim();
     const emailVal = email.trim().toLowerCase();
     const roleVal = role.trim();
@@ -228,8 +294,6 @@ function InnerAgree() {
     if (!roleVal) return setErr("Please enter your role/title.");
     if (!purpose) return setErr("Please select a purpose.");
     if (!agree) return setErr("Please accept the Terms and Privacy Policy to proceed.");
-
-    setSubmitting(true);
 
     const payload: ConsentPayload = {
       name: nameVal,
@@ -259,44 +323,44 @@ function InnerAgree() {
       });
     } catch {}
 
+    // Make cookies available for middleware before we redirect/download
+    setGateCookies(emailVal);
+
     setOk(true);
     setSubmitting(false);
 
     if (requireEmailVerification) {
-      try {
-        await sendMagicLink(emailVal); // ALWAYS send to current email
+      /* try {
+        await sendMagicLink(emailVal);
       } catch {
         setErr("We couldn't send the verification email. Please try again.");
       }
-      return; // wait for user to click email
+      return; */
+      // Kept intentionally commented while verification flow is not enabled.
     }
 
     if (returnTo && isFilePath(returnTo)) {
-      await triggerPublicDownload();
+      // Trigger download
+      try {
+        const a = document.createElement("a");
+        a.href = returnTo;
+        a.download = "";
+        a.rel = "noopener";
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } catch {
+        window.open(returnTo, "_blank", "noopener,noreferrer");
+      }
     }
 
-    // Return to caller (history-first). No /contact or /product fallback.
+    // Return to caller (history-first)
     navigateBackSmart(returnTo || null, router);
+    // ---------------- END ORIGINAL ----------------
   }
 
-  async function onResend() {
-    const current = email.trim().toLowerCase();
-    if (!isValidEmail(current)) {
-      setErr("Please enter a valid email address before resending.");
-      return;
-    }
-    setSubmitting(true);
-    setErr(null);
-    try {
-      await sendMagicLink(current); // resend to CURRENT email
-    } catch {
-      setErr("We couldn't resend the email. Please try again.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  // IMPORTANT: if the user edits the email, clear any previous “sent” state
+  // If user edits the email, clear previous “sent” state (original)
   const handleEmailChange = (v: string) => {
     setEmail(v);
     setEmailSent(false);
@@ -314,14 +378,13 @@ function InnerAgree() {
           <p className="mt-1 text-[15px] leading-7 text-slate-700">
             We ask for minimal info to enable downloads and protect our materials.
           </p>
+          <BypassBanner enabled={BYPASS_GATES} />
         </header>
 
-        {/* suppressHydrationWarning helps if a browser extension injects attributes */}
+        {/* UI kept the same so it looks familiar */}
         <form onSubmit={onSubmit} noValidate suppressHydrationWarning>
           <label className="mb-3 block">
-            <span className="mb-1 block text-sm font-medium text-slate-800">
-              Name
-            </span>
+            <span className="mb-1 block text-sm font-medium text-slate-800">Name</span>
             <input
               type="text"
               name="name"
@@ -338,9 +401,7 @@ function InnerAgree() {
           <label className="mb-3 block">
             <span className="mb-1 block text-sm font-medium text-slate-800">
               Email{" "}
-              {needBusiness && (
-                <em className="text-slate-500">(business/org required)</em>
-              )}
+              {needBusiness && <em className="text-slate-500">(business/org required)</em>}
             </span>
             <input
               type="email"
@@ -356,9 +417,7 @@ function InnerAgree() {
           </label>
 
           <label className="mb-3 block">
-            <span className="mb-1 block text-sm font-medium text-slate-800">
-              Role / Title
-            </span>
+            <span className="mb-1 block text-sm font-medium text-slate-800">Role / Title</span>
             <input
               type="text"
               name="role"
@@ -429,33 +488,9 @@ function InnerAgree() {
             </div>
           )}
 
-          {ok && !requireEmailVerification && (
+          {ok && (
             <div className="mb-3 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-              Thanks! Your download should start shortly.
-            </div>
-          )}
-
-          {ok && requireEmailVerification && (
-            <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-              <div className="font-semibold">Confirm your email</div>
-              <div className="mt-1">
-                We’ve sent a secure link to{" "}
-                <span className="font-mono">{email.trim().toLowerCase()}</span>. Click it to
-                verify your email and we’ll start your download automatically.
-              </div>
-              <div className="mt-2 flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={onResend}
-                  disabled={submitting}
-                  className="rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-amber-100 disabled:opacity-60"
-                >
-                  {submitting ? "Resending…" : "Resend link"}
-                </button>
-                <span className="text-xs text-slate-600">
-                  Wrong address? Edit above and submit again.
-                </span>
-              </div>
+              We’re processing your request…
             </div>
           )}
 
@@ -469,24 +504,14 @@ function InnerAgree() {
               {submitting ? "Saving…" : "Agree & continue"}
             </button>
 
-            {ok ? (
-              <button
-                type="button"
-                onClick={goBack}
-                className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
-                aria-label="Return"
-              >
-                Return
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={goBack}
-                className="text-sm text-slate-700 underline hover:text-slate-900"
-              >
-                Cancel
-              </button>
-            )}
+            {/* Cancel should always leave this page */}
+            <button
+              type="button"
+              onClick={() => navigateBackSmart(returnTo || null, router)}
+              className="text-sm text-slate-700 underline hover:text-slate-900"
+            >
+              Cancel
+            </button>
           </div>
         </form>
       </div>
@@ -495,7 +520,7 @@ function InnerAgree() {
       <p className="mt-4 text-center text-[12px] leading-5 text-slate-600">
         You were sent here from:{" "}
         <span className="font-mono">
-          {returnTo || sameOriginReferrer() || "/"}
+          {mounted ? (returnTo || sameOriginReferrer() || "/") : ""}
         </span>
       </p>
     </div>
