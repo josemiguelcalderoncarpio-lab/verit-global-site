@@ -3,6 +3,8 @@ export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
 import { sql } from "@/lib/db";
+import nodemailer from "nodemailer";
+import SMTPTransport from "nodemailer/lib/smtp-transport";
 import { ClientSecretCredential } from "@azure/identity";
 
 /* ------------------------------ types ------------------------------ */
@@ -27,13 +29,13 @@ export async function OPTIONS() {
 async function sha256Hex(input: string) {
   const data = new TextEncoder().encode(input);
   const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function randomToken(bytes = 24) {
   const a = new Uint8Array(bytes);
   crypto.getRandomValues(a);
-  return Array.from(a, b => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function normalizeEmail(raw?: string | null): string | null {
@@ -125,24 +127,22 @@ async function getOrCreatePersonId(email: string): Promise<string> {
 }
 
 /* ----------------------------- providers --------------------------- */
-
-/** Microsoft Graph sendMail (app-only). `saveToSentItems` must be top-level. */
+/**
+ * M365 via SMTP:
+ * - Prefers OAuth2 token (Client Credentials) if tenant/client/secret present.
+ * - Falls back to basic SMTP auth using M365_SMTP_PASSWORD if provided.
+ * Notes:
+ * - Host: smtp.office365.com, Port: 587, STARTTLS.
+ */
 async function sendMagicLinkM365(to: string, link: string) {
-  const tenantId = process.env.M365_TENANT_ID!;
-  const clientId = process.env.M365_CLIENT_ID!;
-  const clientSecret = process.env.M365_CLIENT_SECRET!;
-  const fromAddress = process.env.M365_FROM || "no-reply@veritglobal.com";
+  const tenantId = process.env.M365_TENANT_ID?.trim();
+  const clientId = process.env.M365_CLIENT_ID?.trim();
+  const clientSecret = process.env.M365_CLIENT_SECRET?.trim();
+  const smtpUser = (process.env.M365_USER || "jose@veritglobal.com").trim(); // authenticated principal
+  const fromAddress = (process.env.M365_FROM || "no-reply@veritglobal.com").trim(); // visible From
+  const smtpPassword = process.env.M365_SMTP_PASSWORD?.trim(); // optional basic auth
   const debug = process.env.EMAIL_DEBUG === "1";
 
-  if (!tenantId || !clientId || !clientSecret || !fromAddress) {
-    throw new Error("M365 credentials not configured");
-  }
-
-  const credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
-  const graphToken = await credential.getToken("https://graph.microsoft.com/.default");
-  if (!graphToken?.token) throw new Error("Failed to get Microsoft Graph token");
-
-  const subject = "Your secure access link";
   const html = `
     <div style="font-family:system-ui,Segoe UI,Arial">
       <h2>Your secure access link</h2>
@@ -152,43 +152,80 @@ async function sendMagicLinkM365(to: string, link: string) {
     </div>
   `;
 
-  // saveToSentItems is OUTSIDE message
-  const body = {
+  // Build transport options
+  const baseOpts: SMTPTransport.Options = {
+    host: "smtp.office365.com",
+    port: 587,
+    secure: false, // STARTTLS
+    tls: { minVersion: "TLSv1.2" },
+    logger: debug,
+  };
+
+  let transportOpts: SMTPTransport.Options;
+
+  if (tenantId && clientId && clientSecret) {
+    // OAuth2 (XOAUTH2) using app-only token for SMTP AUTH
+    const credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
+    const token = await credential.getToken("https://outlook.office365.com/.default");
+    if (!token?.token) throw new Error("Failed to obtain SMTP OAuth2 token");
+    transportOpts = {
+      ...baseOpts,
+      auth: { type: "OAuth2", user: smtpUser, accessToken: token.token },
+    };
+  } else if (smtpPassword) {
+    // Basic auth (requires SMTP AUTH enabled on the mailbox)
+    transportOpts = {
+      ...baseOpts,
+      auth: { user: smtpUser, pass: smtpPassword },
+    };
+  } else {
+    throw new Error("No SMTP auth configured: provide Tenant/Client/Secret or M365_SMTP_PASSWORD");
+  }
+
+  const transporter = nodemailer.createTransport(transportOpts);
+
+  await transporter.sendMail({
+    from: `Verit Global <${fromAddress}>`,
+    to,
+    subject: "Your secure access link",
+    text: `Your secure link:\n\n${link}\n`,
+    html,
+  });
+}
+
+/* -------------------- (COMMENTED) Graph sendMail for later ------------------- */
+/*
+async function sendMagicLinkGraph(to: string, link: string) {
+  const tenantId = process.env.M365_TENANT_ID!;
+  const clientId = process.env.M365_CLIENT_ID!;
+  const clientSecret = process.env.M365_CLIENT_SECRET!;
+  const fromAddress = process.env.M365_FROM || "no-reply@veritglobal.com";
+  const credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
+  const graphToken = await credential.getToken("https://graph.microsoft.com/.default");
+  if (!graphToken?.token) throw new Error("Failed to get Graph token");
+
+  const html = `... same as above ...`;
+  const message = {
     message: {
-      subject,
+      subject: "Your secure access link",
       body: { contentType: "HTML", content: html },
       toRecipients: [{ emailAddress: { address: to } }],
-      // When calling /users/{from}/sendMail the sender is implied by the route.
-      // You may optionally include replyTo if desired:
+      from: { emailAddress: { address: fromAddress } },
       replyTo: [{ emailAddress: { address: fromAddress } }],
+      sender: { emailAddress: { address: fromAddress } },
     },
     saveToSentItems: false,
   };
 
-  const resp = await fetch(
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(fromAddress)}/sendMail`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${graphToken.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    }
-  );
-
-  if (!resp.ok) {
-    const txt = await resp.text().catch(() => "");
-    if (debug) {
-      throw new Error(`Graph sendMail failed (${resp.status}): ${txt || "<no body>"}`);
-    }
-    throw new Error("Graph sendMail failed");
-  }
-
-  if (debug) console.log("[magic-link] Graph sendMail accepted for", to);
+  const resp = await fetch(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(fromAddress)}/sendMail`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${graphToken.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(message),
+  });
+  if (!resp.ok) throw new Error(`Graph sendMail failed (${resp.status}): ${await resp.text()}`);
 }
+*/
 
-/** Resend fallback */
 async function sendMagicLinkResend(to: string, link: string) {
   const apiKey = process.env.RESEND_API_KEY!;
   const from = process.env.RESEND_FROM || "Verit Global <onboarding@resend.dev>";
@@ -205,13 +242,7 @@ async function sendMagicLinkResend(to: string, link: string) {
   const resp = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      from,
-      to,
-      subject: "Your secure access link",
-      html,
-      text: `Your secure link:\n\n${link}\n`,
-    }),
+    body: JSON.stringify({ from, to, subject: "Your secure access link", html, text: `Your secure link:\n\n${link}\n` }),
   });
   if (!resp.ok) throw new Error(`Resend ${resp.status}: ${await resp.text()}`);
 }
@@ -220,7 +251,6 @@ async function sendMagicLinkResend(to: string, link: string) {
 
 export async function POST(req: NextRequest) {
   try {
-    // Make sure tables exist (safe/no-op when already present)
     await ensureTables();
 
     // parse body (json or form)
@@ -261,13 +291,17 @@ export async function POST(req: NextRequest) {
       redirect_to ? `&go=${encodeURIComponent(redirect_to)}` : ""
     }`;
 
-    // send
     if (shouldSend) {
       try {
-        const provider = (process.env.EMAIL_PROVIDER || "").toUpperCase();
-        if (provider === "M365") await sendMagicLinkM365(email, link);
-        else if (provider === "RESEND") await sendMagicLinkResend(email, link);
-        else throw new Error(`Unknown EMAIL_PROVIDER: ${provider}`);
+        const provider = (process.env.EMAIL_PROVIDER || "M365").toUpperCase();
+        if (provider === "M365") {
+          await sendMagicLinkM365(email, link);
+          // await sendMagicLinkGraph(email, link); // (commented) switch back later if desired
+        } else if (provider === "RESEND") {
+          await sendMagicLinkResend(email, link);
+        } else {
+          throw new Error(`Unknown EMAIL_PROVIDER: ${provider}`);
+        }
       } catch (err: unknown) {
         console.error("[magic-link] send failed]:", err);
         const msg = err instanceof Error ? err.message : String(err);
@@ -289,7 +323,6 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
-    // Safe to call (no-op if already created), helps first-ever GET path too
     await ensureTables();
 
     const url = new URL(req.url);
@@ -312,8 +345,10 @@ export async function GET(req: NextRequest) {
       return withCors(NextResponse.json({ ok: false, error: "token_expired" }, { status: 400 }));
     }
 
-    // mark consumed (prod column is 'consumed_at'; safe no-op if absent)
-    try { await sql/* sql */`UPDATE verit.magic_link SET consumed_at = now() WHERE token_hash = ${tokenHash}`; } catch {}
+    // mark consumed; ignore if column missing
+    try {
+      await sql/* sql */`UPDATE verit.magic_link SET consumed_at = now() WHERE token_hash = ${tokenHash}`;
+    } catch {}
 
     const email: string = row.email;
 
@@ -321,37 +356,31 @@ export async function GET(req: NextRequest) {
     const dest = row.redirect_to ?? go ?? "/contact";
     const base = new URL(req.url);
     const origin = `${base.protocol}//${base.host}`;
-    const redirectUrl =
-      /^https?:\/\//i.test(dest)
-        ? dest
-        : `${origin}${dest.startsWith("/") ? "" : "/"}${dest}`;
+    const redirectUrl = /^https?:\/\//i.test(dest) ? dest : `${origin}${dest.startsWith("/") ? "" : "/"}${dest}`;
 
     const res = NextResponse.redirect(redirectUrl, { status: 302 });
 
-    // ------------------ COOKIE FIX: write plain cookies ------------------
+    // Cookies (host + apex)
     const isProd = (process.env.VERCEL_ENV || process.env.NODE_ENV) === "production";
     const common = {
       path: "/",
       sameSite: "lax" as const,
       secure: isProd,
       httpOnly: false,
-      maxAge: 60 * 60 * 24 * 365, // 1 year
+      maxAge: 60 * 60 * 24 * 365,
     };
 
-    // For *.veritglobal.com set both host-only and apex-domain cookies
-    const host = base.host; // e.g. "www.veritglobal.com"
+    const host = base.host; // e.g., www.veritglobal.com
     const apexDomain = host.endsWith(".veritglobal.com") ? ".veritglobal.com" : undefined;
 
     const setAll = (name: string, value: string) => {
-      res.cookies.set(name, value, common); // host-only
+      res.cookies.set(name, value, common);
       if (apexDomain) res.cookies.set(name, value, { ...common, domain: apexDomain });
     };
 
-    // Plain (NOT encoded) values + legacy aliases
     setAll("vg_user_email", email);
-    setAll("user_email", email);        // legacy alias
-    setAll("vg_access_granted", "1");   // legacy boolean gate
-    // --------------------------------------------------------------------
+    setAll("user_email", email); // legacy
+    setAll("vg_access_granted", "1");
 
     return withCors(res);
   } catch (err) {
