@@ -16,23 +16,24 @@ export async function GET() {
   try {
     const sql = getClient();
 
-    const dayRows = await sql<CountRow>/* sql */`
+    // No generics here — cast the result shape instead
+    const dayRows = (await sql/* sql */`
       with span as (select now() - interval '24 hours' as since)
       select verdict::text as verdict, count(*)::int as cnt
       from verit.gate_event, span
       where ts >= span.since
       group by verdict
       order by verdict
-    `;
+    `) as unknown as CountRow[];
 
-    const weekRows = await sql<CountRow>/* sql */`
+    const weekRows = (await sql/* sql */`
       with span as (select now() - interval '7 days' as since)
       select verdict::text as verdict, count(*)::int as cnt
       from verit.gate_event, span
       where ts >= span.since
       group by verdict
       order by verdict
-    `;
+    `) as unknown as CountRow[];
 
     const dayMap: Record<GateVerdict, number> = { allow: 0, block: 0 };
     for (const r of dayRows) dayMap[r.verdict] = r.cnt;

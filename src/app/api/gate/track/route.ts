@@ -28,19 +28,6 @@ async function ensureTable(sql: ReturnType<typeof neon>): Promise<void> {
   `;
 }
 
-function parseCookies(header: string | null): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!header) return out;
-  for (const pair of header.split(/;\s*/).filter(Boolean)) {
-    const eq = pair.indexOf("=");
-    if (eq <= 0) continue;
-    const k = pair.slice(0, eq);
-    const v = pair.slice(eq + 1);
-    out[k] = v;
-  }
-  return out;
-}
-
 export async function POST(req: Request) {
   try {
     const sql = getClient();
