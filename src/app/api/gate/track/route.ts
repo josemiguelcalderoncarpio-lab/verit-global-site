@@ -3,14 +3,15 @@ import { neon } from "@neondatabase/serverless";
 
 export const runtime = "nodejs";
 
+type GateVerdict = "allow" | "block";
+
 function getClient() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("Missing DATABASE_URL");
   return neon(url);
 }
 
-async function ensureTable(sql: ReturnType<typeof neon>) {
-  // Create schema/table if not present. Uses BIGSERIAL to avoid extensions.
+async function ensureTable(sql: ReturnType<typeof neon>): Promise<void> {
   await sql/* sql */`
     create schema if not exists verit;
     create table if not exists verit.gate_event (
@@ -27,25 +28,43 @@ async function ensureTable(sql: ReturnType<typeof neon>) {
   `;
 }
 
+function parseCookies(header: string | null): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const pair of header.split(/;\s*/).filter(Boolean)) {
+    const eq = pair.indexOf("=");
+    if (eq <= 0) continue;
+    const k = pair.slice(0, eq);
+    const v = pair.slice(eq + 1);
+    out[k] = v;
+  }
+  return out;
+}
+
 export async function POST(req: Request) {
   try {
     const sql = getClient();
     await ensureTable(sql);
 
-    // Accept either JSON body or query params for easy beacons
-    let verdict = "";
+    const url = new URL(req.url);
+    const ctype = req.headers.get("content-type") || "";
+
+    let verdict: GateVerdict | "" = "";
     let path = "";
     let killSwitch = false;
 
-    const url = new URL(req.url);
-    const ctype = req.headers.get("content-type") || "";
     if (ctype.includes("application/json")) {
-      const body = await req.json().catch(() => ({} as any));
-      verdict = String(body?.verdict || "").toLowerCase();
+      const body = (await req.json().catch(() => ({}))) as {
+        verdict?: string;
+        path?: string;
+        killSwitch?: boolean | string;
+      };
+      verdict = (String(body?.verdict || "") as GateVerdict).toLowerCase() as GateVerdict | "";
       path = String(body?.path || url.searchParams.get("path") || "");
-      killSwitch = String(body?.killSwitch ?? url.searchParams.get("killSwitch") ?? "false") === "true";
+      const ksRaw = body?.killSwitch ?? url.searchParams.get("killSwitch") ?? "false";
+      killSwitch = String(ksRaw) === "true";
     } else {
-      verdict = String(url.searchParams.get("verdict") || "").toLowerCase();
+      verdict = (String(url.searchParams.get("verdict") || "") as GateVerdict).toLowerCase() as GateVerdict | "";
       path = String(url.searchParams.get("path") || "");
       killSwitch = String(url.searchParams.get("killSwitch") || "false") === "true";
     }
@@ -55,7 +74,6 @@ export async function POST(req: Request) {
     }
     if (!path) path = "/unknown";
 
-    // IP & UA best-effort (Vercel)
     const ip =
       req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
       req.headers.get("x-real-ip") ||
@@ -68,8 +86,9 @@ export async function POST(req: Request) {
     `;
 
     return NextResponse.json({ ok: true });
-  } catch (err: any) {
-    console.error("[gate/track] error:", err?.message || err);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[gate/track] error:", msg);
     return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
   }
 }
